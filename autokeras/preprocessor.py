@@ -2,7 +2,7 @@ import torch
 
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
-from torchvision.transforms import ToPILImage, RandomCrop, RandomHorizontalFlip, ToTensor, Normalize, Compose
+from torchvision.transforms import ToPILImage, RandomCrop, RandomHorizontalFlip, ToTensor, Normalize, Compose, RandomVerticalFlip
 
 from autokeras.constant import Constant
 
@@ -64,8 +64,9 @@ class DataTransformer:
             augment_list = []
         else:
             augment_list = [ToPILImage(),
-                            RandomCrop(data.shape[1:3], padding=4),
+                            RandomCrop((data.shape[1] - 4,data.shape[2] - 4)),
                             RandomHorizontalFlip(),
+                            RandomVerticalFlip(),
                             ToTensor()
                             ]
         common_list = [Normalize(torch.Tensor(self.mean), torch.Tensor(self.std))]

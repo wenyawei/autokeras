@@ -27,6 +27,6 @@ class Constant:
     MAX_ITER_NUM = 200
     MIN_LOSS_DEC = 1e-4
     MAX_NO_IMPROVEMENT_NUM = 5
-    MAX_BATCH_SIZE = 128
+    MAX_BATCH_SIZE = 16
     LIMIT_MEMORY = False
     SEARCH_MAX_ITER = 200

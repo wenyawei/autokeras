@@ -8,14 +8,14 @@ NOISE_RATIO = 1e-4
 def deeper_conv_block(conv_layer, kernel_size, weighted=True):
     filter_shape = (kernel_size,) * 2
     n_filters = conv_layer.filters
-    weight = np.zeros((n_filters, n_filters) + filter_shape)
+    weight = np.zeros((n_filters, n_filters) + filter_shape, dtype=np.float32)
     center = tuple(map(lambda x: int((x - 1) / 2), filter_shape))
     for i in range(n_filters):
-        filter_weight = np.zeros((n_filters,) + filter_shape)
+        filter_weight = np.zeros((n_filters,) + filter_shape, dtype=np.float32)
         index = (i,) + center
         filter_weight[index] = 1
         weight[i, ...] = filter_weight
-    bias = np.zeros(n_filters)
+    bias = np.zeros(n_filters, dtype=np.float32)
     new_conv_layer = StubConv(conv_layer.filters, n_filters, kernel_size=kernel_size)
     bn = StubBatchNormalization(n_filters)
 
@@ -34,8 +34,8 @@ def deeper_conv_block(conv_layer, kernel_size, weighted=True):
 
 def dense_to_deeper_block(dense_layer, weighted=True):
     units = dense_layer.units
-    weight = np.eye(units)
-    bias = np.zeros(units)
+    weight = np.eye(units, dtype=np.float32)
+    bias = np.zeros(units, dtype=np.float32)
     new_dense_layer = StubDense(units, units)
     if weighted:
         new_dense_layer.set_weights((add_noise(weight, np.array([0, 1])), add_noise(bias, np.array([0, 1]))))
@@ -97,7 +97,7 @@ def wider_next_conv(layer, start_dim, total_dim, n_add, weighted=True):
 
     new_weight_shape = list(teacher_w.shape)
     new_weight_shape[1] = n_add
-    new_weight = np.zeros(tuple(new_weight_shape))
+    new_weight = np.zeros(tuple(new_weight_shape), dtype=np.float32)
 
     student_w = np.concatenate((teacher_w[:, :start_dim, ...].copy(),
                                 add_noise(new_weight, teacher_w),
@@ -135,7 +135,7 @@ def wider_next_dense(layer, start_dim, total_dim, n_add, weighted=True):
     student_w = teacher_w.copy()
     n_units_each_channel = int(teacher_w.shape[1] / total_dim)
 
-    new_weight = np.zeros((teacher_w.shape[0], n_add * n_units_each_channel))
+    new_weight = np.zeros((teacher_w.shape[0], n_add * n_units_each_channel), dtype=np.float32)
     student_w = np.concatenate((student_w[:, :start_dim * n_units_each_channel],
                                 add_noise(new_weight, student_w),
                                 student_w[:, start_dim * n_units_each_channel:total_dim * n_units_each_channel]),

@@ -19,9 +19,9 @@ class CnnGenerator:
         temp_input_channel = self.input_shape[-1]
         output_node_id = 0
         for i in range(model_len):
-            output_node_id = graph.add_layer(StubReLU(), output_node_id)
             output_node_id = graph.add_layer(StubConv(temp_input_channel, model_width, kernel_size=3), output_node_id)
             output_node_id = graph.add_layer(StubBatchNormalization(model_width), output_node_id)
+            output_node_id = graph.add_layer(StubReLU(), output_node_id)
             temp_input_channel = model_width
             if pooling_len == 0 or ((i + 1) % pooling_len == 0 and i != model_len - 1):
                 output_node_id = graph.add_layer(StubPooling(), output_node_id)

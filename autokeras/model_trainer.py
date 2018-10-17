@@ -131,9 +131,9 @@ class ModelTrainer(ModelTrainerBase):
         self.model.train()
         loader = self.train_loader
 
-        cp_loader = deepcopy(loader)
+        # cp_loader = deepcopy(loader)
         if self.verbose:
-            progress_bar = tqdm(total=len(cp_loader),
+            progress_bar = tqdm(total=len(loader),
                                 desc='Current Epoch',
                                 file=sys.stdout,
                                 leave=False,
@@ -141,7 +141,7 @@ class ModelTrainer(ModelTrainerBase):
                                 position=0,
                                 unit=' batch')
 
-        for batch_idx, (inputs, targets) in enumerate(cp_loader):
+        for batch_idx, (inputs, targets) in enumerate(loader):
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             self.optimizer.zero_grad()
             outputs = self.model(inputs)
@@ -161,7 +161,7 @@ class ModelTrainer(ModelTrainerBase):
         all_predicted = []
         loader = self.test_loader
         with torch.no_grad():
-            for batch_idx, (inputs, targets) in enumerate(deepcopy(loader)):
+            for batch_idx, (inputs, targets) in enumerate(loader):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
                 # cast tensor to float
@@ -221,7 +221,8 @@ class GANModelTrainer(ModelTrainerBase):
         # put model into train mode
         self.d_model.train()
         # TODO: why?
-        cp_loader = deepcopy(self.train_loader)
+        # cp_loader = deepcopy(self.train_loader)
+        cp_loader = self.train_loader
         if self.verbose:
             pbar = tqdm(total=len(cp_loader),
                         desc='Current Epoch',

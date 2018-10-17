@@ -8,6 +8,8 @@ from functools import reduce
 import numpy as np
 from scipy import ndimage
 import torch
+import torchvision
+from PIL import Image
 from sklearn.model_selection import train_test_split
 
 from autokeras.loss_function import classification_loss, regression_loss
@@ -57,7 +59,7 @@ def read_csv_file(csv_file_path):
         fieldnames = path_list.fieldnames
         for path in path_list:
             file_names.append(path[fieldnames[0]])
-            file_labels.append(path[fieldnames[1]])
+            file_labels.append(int(path[fieldnames[1]]))
     return file_names, file_labels
 
 
@@ -106,6 +108,51 @@ def load_image_dataset(csv_file_path, images_path):
     img_file_name, y = read_csv_file(csv_file_path)
     x = read_images(img_file_name, images_path)
     return np.array(x), np.array(y)
+
+class MyData(torch.utils.data.Dataset):
+    def __init__(self, csv_file, root, transforms=None, test=False):
+        self.test = test
+        img_names, self.labels = read_csv_file(csv_file)
+        print('root is {}'.format(root))
+        self.img_names = []
+        for img in img_names:
+            img = os.path.join(root, img)
+            self.img_names.append(img)
+
+        encoder = OneHotEncoder()
+        encoder.fit(self.labels)
+        self.labels = encoder.transform(self.labels)
+        self.n_classes = encoder.n_classes
+
+        if transforms is None:
+            normalize = torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                         std=[0.229, 0.224, 0.225])
+            if self.test:
+                self.transforms = torchvision.transforms.Compose([
+                                        torchvision.transforms.Resize(256),
+                                        torchvision.transforms.CenterCrop(224),
+                                        torchvision.transforms.ToTensor(),
+                                        normalize,
+                                    ])
+            else:
+                self.transforms = torchvision.transforms.Compose([
+                                        torchvision.transforms.Resize(256),
+                                        torchvision.transforms.RandomResizedCrop(224),
+                                        torchvision.transforms.RandomHorizontalFlip(),
+                                        torchvision.transforms.RandomVerticalFlip(),
+                                        torchvision.transforms.ToTensor(),
+                                        normalize,
+                                    ])
+
+    def __getitem__(self, index):
+        img_path = self.img_names[index]
+        label = self.labels[index]
+        data = Image.open(img_path)
+        data = self.transforms(data)
+        return data, label
+
+    def __len__(self):
+        return len(self.img_names)
 
 
 class ImageSupervised(Supervised):
@@ -249,6 +296,69 @@ class ImageSupervised(Supervised):
                 raise TimeoutError("Search Time too short. No model was found during the search time.")
             elif self.verbose:
                 print('Time is out.')
+
+    def fit_dataset(self, train_data_root=None, test_data_root=None, time_limit=None):
+        """
+
+        :param train_data_root:
+        :param test_data_root:
+        :param time_limit:
+        :return:
+        """
+        # loading data
+        train_dataset = MyData(csv_file='train/train.csv', root='train', test=False)
+        train_data = torch.utils.data.DataLoader(
+            train_dataset,
+            # TODO
+            batch_size=8,
+            shuffle=True,
+            pin_memory=True)
+        test_dataset = MyData(csv_file='test/test.csv', root='test', test=True)
+        test_data = torch.utils.data.DataLoader(
+            test_dataset,
+            # TODO
+            batch_size=8,
+            shuffle=False,
+            pin_memory=True)
+
+        # Create the searcher and save on disk
+        if not self.searcher:
+            input_shape = (224, 224, 3)
+            self.searcher_args['n_output_node'] = 4
+            self.searcher_args['input_shape'] = input_shape
+            self.searcher_args['path'] = self.path
+            self.searcher_args['metric'] = self.metric
+            self.searcher_args['loss'] = self.loss
+            self.searcher_args['verbose'] = self.verbose
+            searcher = Searcher(**self.searcher_args)
+            self.save_searcher(searcher)
+            self.searcher = True
+
+        # Save the classifier
+        pickle.dump(self, open(os.path.join(self.path, 'classifier'), 'wb'))
+        pickle_to_file(self, os.path.join(self.path, 'classifier'))
+
+        if time_limit is None:
+            time_limit = 24 * 60 * 60
+
+        start_time = time.time()
+        time_remain = time_limit
+        try:
+            while time_remain > 0:
+                run_searcher_once(train_data, test_data, self.path, int(time_remain))
+                if len(self.load_searcher().history) >= Constant.MAX_MODEL_NUM:
+                    break
+                time_elapsed = time.time() - start_time
+                time_remain = time_limit - time_elapsed
+            # if no search executed during the time_limit, then raise an error
+            if time_remain <= 0:
+                raise TimeoutError
+        except TimeoutError:
+            if len(self.load_searcher().history) == 0:
+                raise TimeoutError("Search Time too short. No model was found during the search time.")
+            elif self.verbose:
+                print('Time is out.')
+
 
     @abstractmethod
     def get_n_output_node(self):

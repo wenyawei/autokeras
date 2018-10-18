@@ -18,7 +18,7 @@ from autokeras.constant import Constant
 from autokeras.metric import Accuracy, MSE
 from autokeras.preprocessor import OneHotEncoder, DataTransformer
 from autokeras.search import Searcher, train
-from autokeras.utils import ensure_dir, has_file, pickle_from_file, pickle_to_file, temp_folder_generator
+from autokeras.utils import ensure_dir, has_file, pickle_from_file, pickle_to_file, temp_folder_generator, get_device
 
 
 def _validate(x_train, y_train):
@@ -119,10 +119,10 @@ class MyData(torch.utils.data.Dataset):
             img = os.path.join(root, img)
             self.img_names.append(img)
 
-        encoder = OneHotEncoder()
-        encoder.fit(self.labels)
-        self.labels = encoder.transform(self.labels)
-        self.n_classes = encoder.n_classes
+        self.encoder = OneHotEncoder()
+        self.encoder.fit(self.labels)
+        self.labels = self.encoder.transform(self.labels)
+        self.n_classes = self.encoder.n_classes
 
         if transforms is None:
             normalize = torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -297,7 +297,8 @@ class ImageSupervised(Supervised):
             elif self.verbose:
                 print('Time is out.')
 
-    def fit_dataset(self, train_data_root=None, test_data_root=None, time_limit=None):
+    def fit_dataset(self, train_root, train_csv_file, 
+                    test_root, test_csv_file, time_limit=None):
         """
 
         :param train_data_root:
@@ -306,14 +307,14 @@ class ImageSupervised(Supervised):
         :return:
         """
         # loading data
-        train_dataset = MyData(csv_file='train/train.csv', root='train', test=False)
+        train_dataset = MyData(csv_file=train_csv_file, root=train_root, test=False)
         train_data = torch.utils.data.DataLoader(
             train_dataset,
             # TODO
             batch_size=8,
             shuffle=True,
             pin_memory=True)
-        test_dataset = MyData(csv_file='test/test.csv', root='test', test=True)
+        test_dataset = MyData(csv_file=test_csv_file, root=test_root, test=True)
         test_data = torch.utils.data.DataLoader(
             test_dataset,
             # TODO
@@ -397,6 +398,32 @@ class ImageSupervised(Supervised):
         y_predict = self.predict(x_test)
         return self.metric().evaluate(y_test, y_predict)
 
+    def evaluate_dataset(self, test_root, test_csv_file):
+        test_dataset = MyData(csv_file=test_csv_file, root=test_root, test=True)
+        test_data = torch.utils.data.DataLoader(
+            test_dataset,
+            # TODO
+            batch_size=8,
+            shuffle=False,
+            pin_memory=True)
+
+        model = self.load_searcher().load_best_model().produce_model()
+        device = get_device()
+        model.to(device)
+        model.eval()
+
+        all_targets = []
+        all_predicted = []
+        with torch.no_grad():
+            for batch_idx, (inputs, targets) in enumerate(test_data):
+                inputs, targets = inputs.to(device), targets.to(device)
+                outputs = model(inputs)
+                all_predicted.append(outputs.cpu().numpy())
+                all_targets.append(targets.cpu().numpy())
+        all_predicted = reduce(lambda x, y: np.concatenate((x, y)), all_predicted)
+        all_targets = reduce(lambda x, y: np.concatenate((x, y)), all_targets)
+        return self.metric.compute(all_predicted, all_targets)
+
     def save_searcher(self, searcher):
         pickle.dump(searcher, open(os.path.join(self.path, 'searcher'), 'wb'))
 
@@ -429,6 +456,34 @@ class ImageSupervised(Supervised):
         if retrain:
             graph.weighted = False
         _, _1, graph = train((graph, train_data, test_data, trainer_args, None, self.metric, self.loss, self.verbose))
+
+    def final_fit_dataset(self, train_root, train_csv_file, test_root, test_csv_file, trainer_args=None, retrain=False):
+        # loading data
+        train_dataset = MyData(csv_file=train_csv_file, root=train_root, test=False)
+        train_data = torch.utils.data.DataLoader(
+            train_dataset,
+            # TODO
+            batch_size=8,
+            shuffle=True,
+            pin_memory=True)
+        test_dataset = MyData(csv_file=test_csv_file, root=test_root, test=True)
+        test_data = torch.utils.data.DataLoader(
+            test_dataset,
+            # TODO
+            batch_size=8,
+            shuffle=False,
+            pin_memory=True)
+
+        if trainer_args is None:
+            trainer_args = {'max_no_improvement_num': 30}
+
+        searcher = self.load_searcher()
+        graph = searcher.load_best_model()
+
+        if retrain:
+            graph.weighted = False
+        _, _1, graph = train((graph, train_data, test_data, trainer_args, None, self.metric, self.loss, self.verbose))
+
 
     def get_best_model_id(self):
         """ Return an integer indicating the id of the best model."""

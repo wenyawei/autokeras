@@ -19,6 +19,7 @@ from autokeras.metric import Accuracy, MSE
 from autokeras.preprocessor import OneHotEncoder, DataTransformer
 from autokeras.search import Searcher, train
 from autokeras.utils import ensure_dir, has_file, pickle_from_file, pickle_to_file, temp_folder_generator, get_device
+from autokeras.model_trainer import ModelTrainer
 
 
 def _validate(x_train, y_train):
@@ -109,6 +110,7 @@ def load_image_dataset(csv_file_path, images_path):
     x = read_images(img_file_name, images_path)
     return np.array(x), np.array(y)
 
+
 class MyData(torch.utils.data.Dataset):
     def __init__(self, csv_file, root, transforms=None, test=False):
         self.test = test
@@ -129,20 +131,20 @@ class MyData(torch.utils.data.Dataset):
                                                          std=[0.229, 0.224, 0.225])
             if self.test:
                 self.transforms = torchvision.transforms.Compose([
-                                        torchvision.transforms.Resize(256),
-                                        torchvision.transforms.CenterCrop(224),
-                                        torchvision.transforms.ToTensor(),
-                                        normalize,
-                                    ])
+                    torchvision.transforms.Resize(256),
+                    torchvision.transforms.CenterCrop(224),
+                    torchvision.transforms.ToTensor(),
+                    normalize,
+                ])
             else:
                 self.transforms = torchvision.transforms.Compose([
-                                        torchvision.transforms.Resize(256),
-                                        torchvision.transforms.RandomResizedCrop(224),
-                                        torchvision.transforms.RandomHorizontalFlip(),
-                                        torchvision.transforms.RandomVerticalFlip(),
-                                        torchvision.transforms.ToTensor(),
-                                        normalize,
-                                    ])
+                    torchvision.transforms.Resize(256),
+                    torchvision.transforms.RandomResizedCrop(224),
+                    torchvision.transforms.RandomHorizontalFlip(),
+                    torchvision.transforms.RandomVerticalFlip(),
+                    torchvision.transforms.ToTensor(),
+                    normalize,
+                ])
 
     def __getitem__(self, index):
         img_path = self.img_names[index]
@@ -297,7 +299,118 @@ class ImageSupervised(Supervised):
             elif self.verbose:
                 print('Time is out.')
 
-    def fit_dataset(self, train_root, train_csv_file, 
+    @abstractmethod
+    def get_n_output_node(self):
+        pass
+
+    def transform_y(self, y_train):
+        return y_train
+
+    def predict(self, x_test):
+        """Return predict results for the testing data.
+
+        Args:
+            x_test: An instance of numpy.ndarray containing the testing data.
+
+        Returns:
+            A numpy.ndarray containing the results.
+        """
+        if Constant.LIMIT_MEMORY:
+            pass
+        test_loader = self.data_transformer.transform_test(x_test)
+        model = self.load_searcher().load_best_model().produce_model()
+        model.eval()
+
+        outputs = []
+        with torch.no_grad():
+            for index, inputs in enumerate(test_loader):
+                outputs.append(model(inputs).numpy())
+        output = reduce(lambda x, y: np.concatenate((x, y)), outputs)
+        return self.inverse_transform_y(output)
+
+    def inverse_transform_y(self, output):
+        return output
+
+    def evaluate(self, x_test, y_test):
+        """Return the accuracy score between predict value and `y_test`."""
+        y_predict = self.predict(x_test)
+        return self.metric().evaluate(y_test, y_predict)
+
+    def save_searcher(self, searcher):
+        pickle.dump(searcher, open(os.path.join(self.path, 'searcher'), 'wb'))
+
+    def load_searcher(self):
+        return pickle_from_file(os.path.join(self.path, 'searcher'))
+
+    def final_fit(self, x_train, y_train, x_test, y_test, trainer_args=None, retrain=False):
+        """Final training after found the best architecture.
+
+        Args:
+            x_train: A numpy.ndarray of training data.
+            y_train: A numpy.ndarray of training targets.
+            x_test: A numpy.ndarray of testing data.
+            y_test: A numpy.ndarray of testing targets.
+            trainer_args: A dictionary containing the parameters of the ModelTrainer constructor.
+            retrain: A boolean of whether reinitialize the weights of the model.
+        """
+        if trainer_args is None:
+            trainer_args = {'max_no_improvement_num': 30}
+
+        y_train = self.transform_y(y_train)
+        y_test = self.transform_y(y_test)
+
+        train_data = self.data_transformer.transform_train(x_train, y_train)
+        test_data = self.data_transformer.transform_test(x_test, y_test)
+
+        searcher = self.load_searcher()
+        graph = searcher.load_best_model()
+
+        if retrain:
+            graph.weighted = False
+        _, _1, graph = train((graph, train_data, test_data, trainer_args, None, self.metric, self.loss, self.verbose))
+
+    def get_best_model_id(self):
+        """ Return an integer indicating the id of the best model."""
+        return self.load_searcher().get_best_model_id()
+
+    def export_keras_model(self, model_file_name):
+        """ Exports the best Keras model to the given filename. """
+        self.load_searcher().load_best_model().produce_keras_model().save(model_file_name)
+
+    def export_autokeras_model(self, model_file_name):
+        """ Creates and Exports the AutoKeras model to the given filename. """
+        portable_model = PortableImageSupervised(graph=self.load_searcher().load_best_model(),
+                                                 y_encoder=self.y_encoder,
+                                                 data_transformer=self.data_transformer,
+                                                 metric=self.metric,
+                                                 inverse_transform_y_method=self.inverse_transform_y)
+        pickle_to_file(portable_model, model_file_name)
+
+
+class ImageClassifier(ImageSupervised):
+    @property
+    def loss(self):
+        return classification_loss
+
+    def transform_y(self, y_train):
+        # Transform y_train.
+        if self.y_encoder is None:
+            self.y_encoder = OneHotEncoder()
+            self.y_encoder.fit(y_train)
+        y_train = self.y_encoder.transform(y_train)
+        return y_train
+
+    def inverse_transform_y(self, output):
+        return self.y_encoder.inverse_transform(output)
+
+    def get_n_output_node(self):
+        return self.y_encoder.n_classes
+
+    @property
+    def metric(self):
+        return Accuracy
+
+    def fit_dataset(self, train_root, train_csv_file,
                     test_root, test_csv_file, time_limit=None):
         """
 
@@ -360,103 +473,6 @@ class ImageSupervised(Supervised):
             elif self.verbose:
                 print('Time is out.')
 
-
-    @abstractmethod
-    def get_n_output_node(self):
-        pass
-
-    def transform_y(self, y_train):
-        return y_train
-
-    def predict(self, x_test):
-        """Return predict results for the testing data.
-
-        Args:
-            x_test: An instance of numpy.ndarray containing the testing data.
-
-        Returns:
-            A numpy.ndarray containing the results.
-        """
-        if Constant.LIMIT_MEMORY:
-            pass
-        test_loader = self.data_transformer.transform_test(x_test)
-        model = self.load_searcher().load_best_model().produce_model()
-        model.eval()
-
-        outputs = []
-        with torch.no_grad():
-            for index, inputs in enumerate(test_loader):
-                outputs.append(model(inputs).numpy())
-        output = reduce(lambda x, y: np.concatenate((x, y)), outputs)
-        return self.inverse_transform_y(output)
-
-    def inverse_transform_y(self, output):
-        return output
-
-    def evaluate(self, x_test, y_test):
-        """Return the accuracy score between predict value and `y_test`."""
-        y_predict = self.predict(x_test)
-        return self.metric().evaluate(y_test, y_predict)
-
-    def evaluate_dataset(self, test_root, test_csv_file):
-        test_dataset = MyData(csv_file=test_csv_file, root=test_root, test=True)
-        test_data = torch.utils.data.DataLoader(
-            test_dataset,
-            # TODO
-            batch_size=8,
-            shuffle=False,
-            pin_memory=True)
-
-        model = self.load_searcher().load_best_model().produce_model()
-        device = get_device()
-        model.to(device)
-        model.eval()
-
-        all_targets = []
-        all_predicted = []
-        with torch.no_grad():
-            for batch_idx, (inputs, targets) in enumerate(test_data):
-                inputs, targets = inputs.to(device), targets.to(device)
-                outputs = model(inputs)
-                all_predicted.append(outputs.cpu().numpy())
-                all_targets.append(targets.cpu().numpy())
-        all_predicted = reduce(lambda x, y: np.concatenate((x, y)), all_predicted)
-        all_targets = reduce(lambda x, y: np.concatenate((x, y)), all_targets)
-        return self.metric.compute(all_predicted, all_targets)
-
-    def save_searcher(self, searcher):
-        pickle.dump(searcher, open(os.path.join(self.path, 'searcher'), 'wb'))
-
-    def load_searcher(self):
-        return pickle_from_file(os.path.join(self.path, 'searcher'))
-
-    def final_fit(self, x_train, y_train, x_test, y_test, trainer_args=None, retrain=False):
-        """Final training after found the best architecture.
-
-        Args:
-            x_train: A numpy.ndarray of training data.
-            y_train: A numpy.ndarray of training targets.
-            x_test: A numpy.ndarray of testing data.
-            y_test: A numpy.ndarray of testing targets.
-            trainer_args: A dictionary containing the parameters of the ModelTrainer constructor.
-            retrain: A boolean of whether reinitialize the weights of the model.
-        """
-        if trainer_args is None:
-            trainer_args = {'max_no_improvement_num': 30}
-
-        y_train = self.transform_y(y_train)
-        y_test = self.transform_y(y_test)
-
-        train_data = self.data_transformer.transform_train(x_train, y_train)
-        test_data = self.data_transformer.transform_test(x_test, y_test)
-
-        searcher = self.load_searcher()
-        graph = searcher.load_best_model()
-
-        if retrain:
-            graph.weighted = False
-        _, _1, graph = train((graph, train_data, test_data, trainer_args, None, self.metric, self.loss, self.verbose))
-
     def final_fit_dataset(self, train_root, train_csv_file, test_root, test_csv_file, trainer_args=None, retrain=False):
         # loading data
         train_dataset = MyData(csv_file=train_csv_file, root=train_root, test=False)
@@ -475,56 +491,54 @@ class ImageSupervised(Supervised):
             pin_memory=True)
 
         if trainer_args is None:
-            trainer_args = {'max_no_improvement_num': 30}
+            trainer_args = {'max_no_improvement_num': 3}
 
         searcher = self.load_searcher()
         graph = searcher.load_best_model()
 
         if retrain:
             graph.weighted = False
-        _, _1, graph = train((graph, train_data, test_data, trainer_args, None, self.metric, self.loss, self.verbose))
 
+        model = graph.produce_model()
+        loss, metric_value = ModelTrainer(model=model,
+                                          train_data=train_data,
+                                          test_data=test_data,
+                                          metric=self.metric,
+                                          loss_function=self.loss,
+                                          verbose=self.verbose).train_model(**trainer_args)
+        print('*********************')
+        print('metric_value = {}'.format(metric_value))
+        acc = self.evaluate_dataset(test_root=test_root, test_csv_file=test_csv_file, model=model)
+        print('0000000000000000000')
+        print('acc = {}'.format(acc))
+        torch.save(model, 'final_' + str(acc) + '.pth.tar')
 
-    def get_best_model_id(self):
-        """ Return an integer indicating the id of the best model."""
-        return self.load_searcher().get_best_model_id()
+    def evaluate_dataset(self, test_root, test_csv_file, model=None):
+        test_dataset = MyData(csv_file=test_csv_file, root=test_root, test=True)
+        test_data = torch.utils.data.DataLoader(
+            test_dataset,
+            # TODO
+            batch_size=8,
+            shuffle=False,
+            pin_memory=True)
 
-    def export_keras_model(self, model_file_name):
-        """ Exports the best Keras model to the given filename. """
-        self.load_searcher().load_best_model().produce_keras_model().save(model_file_name)
+        if model is None:
+            model = self.load_searcher().load_best_model().produce_model()
+        device = get_device()
+        model.to(device)
+        model.eval()
 
-    def export_autokeras_model(self, model_file_name):
-        """ Creates and Exports the AutoKeras model to the given filename. """
-        portable_model = PortableImageSupervised(graph=self.load_searcher().load_best_model(),
-                                                 y_encoder=self.y_encoder,
-                                                 data_transformer=self.data_transformer,
-                                                 metric=self.metric,
-                                                 inverse_transform_y_method=self.inverse_transform_y)
-        pickle_to_file(portable_model, model_file_name)
-
-
-class ImageClassifier(ImageSupervised):
-    @property
-    def loss(self):
-        return classification_loss
-
-    def transform_y(self, y_train):
-        # Transform y_train.
-        if self.y_encoder is None:
-            self.y_encoder = OneHotEncoder()
-            self.y_encoder.fit(y_train)
-        y_train = self.y_encoder.transform(y_train)
-        return y_train
-
-    def inverse_transform_y(self, output):
-        return self.y_encoder.inverse_transform(output)
-
-    def get_n_output_node(self):
-        return self.y_encoder.n_classes
-
-    @property
-    def metric(self):
-        return Accuracy
+        all_targets = []
+        all_predicted = []
+        with torch.no_grad():
+            for batch_idx, (inputs, targets) in enumerate(test_data):
+                inputs, targets = inputs.to(device), targets.to(device)
+                outputs = model(inputs)
+                all_predicted.append(outputs.cpu().numpy())
+                all_targets.append(targets.cpu().numpy())
+        all_predicted = reduce(lambda x, y: np.concatenate((x, y)), all_predicted)
+        all_targets = reduce(lambda x, y: np.concatenate((x, y)), all_targets)
+        return self.metric.compute(all_predicted, all_targets)
 
 
 class ImageRegressor(ImageSupervised):
